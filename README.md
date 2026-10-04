@@ -7,7 +7,7 @@
 _🍚 查看今天谁吃了多少大米饭 🍚_  
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python 3.10%2B-blue.svg)](https://www.python.org/)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.0%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
 
 </div>
