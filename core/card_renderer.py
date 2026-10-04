@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import io
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+
+_RED = "#FF3000"
+_BLACK = "#111111"
+_PAPER = "#F4F1EA"
+_MUTED = "#8A8478"
+_TRACK = "#E4DFD4"
+_WIDTH = 920
+_MAX_AVATAR_PIXELS = 12_000_000
+Image.MAX_IMAGE_PIXELS = _MAX_AVATAR_PIXELS
+
+
+def render_rice_rank_png(rows: list[dict], timestamp: str, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    visible = rows[:10]
+    height = 236 + max(1, len(visible)) * 84 + 78
+    image = Image.new("RGB", (_WIDTH, height), _PAPER)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((36, 36, _WIDTH - 36, height - 36), outline=_BLACK, width=3)
+    draw.rectangle((36, 36, 54, height - 36), fill=_RED)
+    _text(draw, 78, 58, "谁吃了大米饭", 22, _RED, chinese=True)
+    _text(draw, 78, 96, "RICE", 56, _BLACK)
+    title_width = _text_width("RICE", 56)
+    _text(draw, 78 + title_width + 18, 96, "RANK", 56, _RED)
+    draw.line((78, 176, _WIDTH - 76, 176), fill=_BLACK, width=2)
+    _text(draw, 78, 190, f"TODAY  /  {timestamp}", 16, _MUTED)
+
+    if not visible:
+        _text(draw, 78, 250, "今日还没人吃饭", 28, _BLACK, chinese=True)
+    top = visible[0]["tokens"] if visible else 1
+    for index, row in enumerate(visible, start=1):
+        y = 214 + (index - 1) * 84
+        _draw_rank_row(image, draw, y, index, row, top)
+
+    footer_y = height - 78
+    draw.line((78, footer_y, _WIDTH - 76, footer_y), fill=_BLACK, width=1)
+    _text(draw, 78, footer_y + 16, f"GRID {len(visible):02d} / GROUP SAMPLE", 16, _BLACK)
+    draw.rectangle((_WIDTH - 160, footer_y + 16, _WIDTH - 76, footer_y + 34), fill=_RED)
+    image.save(output_path, format="PNG")
+    return output_path
+
+
+def _draw_rank_row(
+    image: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    y: int,
+    index: int,
+    row: dict,
+    top_tokens: int,
+) -> None:
+    _text(draw, 78, y + 16, f"{index:02d}", 22, _RED)
+    avatar = _avatar_image(row.get("avatar"))
+    image.paste(avatar, (132, y))
+    draw.rectangle((132, y, 188, y + 56), outline=_BLACK, width=1)
+    token_text = _format_rank_tokens(int(row.get("tokens") or 0))
+    token_width = _text_width(token_text, 24)
+    _text(draw, _WIDTH - 76 - token_width, y, token_text, 24, _BLACK)
+    chat_text = f"{int(row.get('chats') or 0)} 次"
+    chat_width = _text_width(chat_text, 16, chinese=True)
+    _fit_text(
+        image,
+        206,
+        y,
+        _WIDTH - 76 - token_width - 18,
+        y + 30,
+        str(row.get("name") or row["user_id"]),
+        20,
+        _BLACK,
+    )
+    _text(
+        draw,
+        _WIDTH - 76 - chat_width,
+        y + 34,
+        chat_text,
+        16,
+        _MUTED,
+        chinese=True,
+    )
+    bar_max = _WIDTH - 76 - chat_width - 24 - 206
+    ratio = 0 if top_tokens <= 0 else int(row.get("tokens") or 0) / top_tokens
+    bar_width = max(8, round(bar_max * ratio)) if int(row.get("tokens") or 0) else 0
+    draw.rectangle((206, y + 40, 206 + bar_max, y + 48), fill=_TRACK)
+    if bar_width:
+        draw.rectangle(
+            (206, y + 40, 206 + bar_width, y + 48),
+            fill=_RED,
+        )
+
+
+def _avatar_image(raw: bytes | None) -> Image.Image:
+    size = 56
+    if raw:
+        try:
+            avatar = Image.open(io.BytesIO(raw)).convert("RGB")
+            return avatar.resize((size, size), Image.Resampling.LANCZOS)
+        except Exception:
+            pass
+    placeholder = Image.new("RGB", (size, size), _TRACK)
+    mark = ImageDraw.Draw(placeholder)
+    mark.rectangle((0, 0, size - 1, size - 1), outline=_BLACK, width=1)
+    mark.rectangle((18, 18, 38, 38), fill=_RED)
+    return placeholder
+
+
+def _format_rank_tokens(value: int) -> str:
+    return f"{value:,}"
+
+
+def _text(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    y: int,
+    text: str,
+    size: int,
+    fill: str,
+    chinese: bool = False,
+) -> None:
+    draw.text((x, y), text, font=_font(size, chinese), fill=fill)
+
+
+def _fit_text(
+    image: Image.Image,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    text: str,
+    size: int,
+    fill: str,
+    chinese: bool = True,
+) -> None:
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    layer = Image.new("RGB", (width + 240, height), _PAPER)
+    ImageDraw.Draw(layer).text(
+        (0, 0),
+        " ".join(text.split()),
+        font=_font(size, chinese),
+        fill=fill,
+    )
+    bbox = layer.getbbox()
+    if bbox and bbox[2] > width:
+        fade = Image.new("RGB", (28, height), _PAPER)
+        layer.paste(fade, (width - 28, 0))
+    image.paste(layer.crop((0, 0, width, height)), (left, top))
+
+
+def _text_width(text: str, size: int, chinese: bool = False) -> int:
+    return int(_font(size, chinese).getlength(text))
+
+
+def _font(size: int, chinese: bool = False) -> ImageFont.ImageFont:
+    candidates = (
+        (
+            (r"C:\Windows\Fonts\msyhbd.ttc", 0),
+            (r"C:\Windows\Fonts\msyh.ttc", 0),
+            (r"C:\Windows\Fonts\simhei.ttf", 0),
+        )
+        if chinese
+        else (
+            (r"C:\Windows\Fonts\arialbd.ttf", 0),
+            (r"C:\Windows\Fonts\arial.ttf", 0),
+            (r"C:\Windows\Fonts\segoeuib.ttf", 0),
+        )
+    )
+    for candidate, index in candidates:
+        if Path(candidate).exists():
+            return ImageFont.truetype(candidate, size, index=index)
+    return ImageFont.load_default()

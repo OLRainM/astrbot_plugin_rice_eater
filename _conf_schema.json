@@ -1,0 +1,14 @@
+{
+    "only_admin": {
+        "description": "仅管理员可查看谁吃了大米饭",
+        "type": "bool",
+        "hint": "开启后，普通群成员发送命令不会返回排名卡片。",
+        "default": false
+    },
+    "rank_limit": {
+        "description": "排名人数",
+        "type": "int",
+        "hint": "卡片最多展示的人数，范围 1 到 10。",
+        "default": 10
+    }
+}
