@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
-from .card_renderer import render_rice_rank_png
+from .card_renderer import render_rice_rank_png, render_self_calls_png
 
 _MAX_AVATAR_BYTES = 2 * 1024 * 1024
 _MAX_AVATAR_ITEMS = 20
@@ -25,6 +25,11 @@ class RankService:
         except (TypeError, ValueError):
             limit = 10
         self.rank_limit = min(10, max(1, limit))
+        try:
+            recent_limit = int(config.get("self_recent_limit", 8) or 8)
+        except (TypeError, ValueError):
+            recent_limit = 8
+        self.self_recent_limit = min(12, max(1, recent_limit))
 
     async def get_rank_card(
         self,
@@ -61,42 +66,65 @@ class RankService:
             )
         )
 
-    def get_my_tokens(self, umo: str, user_id: str) -> dict[str, int]:
-        group_id = _group_id_from_umo(umo)
-        user_id = str(user_id or "").strip()
-        if not group_id or not user_id or len(user_id) > 64:
-            return {"tokens": 0, "chats": 0}
-        local_now = datetime.datetime.now().astimezone()
-        today_start_utc = (
-            local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-            .astimezone(ZoneInfo("UTC"))
-            .strftime("%Y-%m-%d %H:%M:%S")
+    async def get_self_card(self, umo: str, user_id: str) -> str:
+        calls = await asyncio.to_thread(self._query_recent_calls, umo, user_id)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        output_path = (
+            Path(get_astrbot_temp_path())
+            / f"astrbot_plugin_rice_eater_self_{uuid.uuid4().hex}.png"
         )
+        return str(
+            await asyncio.to_thread(
+                render_self_calls_png,
+                calls,
+                _mask_user_id(user_id),
+                timestamp,
+                output_path,
+            )
+        )
+
+    def _query_recent_calls(self, umo: str, user_id: str) -> list[dict]:
+        user_umo = _user_umo(umo, user_id)
+        if not user_umo:
+            return []
         db_path = _astrbot_data_dir() / "data_v4.db"
         connection = None
         try:
             connection = sqlite3.connect(
                 f"file:{db_path.as_posix()}?mode=ro", uri=True
             )
-            row = connection.execute(
+            rows = connection.execute(
                 """
                 SELECT
-                    COALESCE(SUM(token_input_other + token_input_cached + token_output), 0),
-                    COUNT(*)
+                    created_at,
+                    token_input_other,
+                    token_input_cached,
+                    token_output
                 FROM provider_stats
                 WHERE agent_type = 'internal'
-                  AND created_at >= ?
                   AND umo = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
                 """,
-                (today_start_utc, _user_umo(umo, user_id)),
-            ).fetchone()
+                (user_umo, self.self_recent_limit),
+            ).fetchall()
         except Exception as err:
-            logger.warning(f"读取个人大米饭用量失败: {type(err).__name__}")
-            return {"tokens": 0, "chats": 0}
+            logger.warning(f"读取最近调用失败: {type(err).__name__}")
+            return []
         finally:
             if connection is not None:
                 connection.close()
-        return {"tokens": int(row[0] or 0), "chats": int(row[1] or 0)}
+        calls = []
+        for created_at, token_input_other, token_input_cached, token_output in rows:
+            calls.append(
+                {
+                    "time": _mask_call_time(created_at),
+                    "input_tokens": int(token_input_other or 0)
+                    + int(token_input_cached or 0),
+                    "output_tokens": int(token_output or 0),
+                }
+            )
+        return calls
 
     def _query_group_user_tokens(self, umo: str) -> list[dict]:
         group_id = _group_id_from_umo(umo)
@@ -170,10 +198,38 @@ def _group_id_from_umo(umo: str) -> str:
 
 
 def _user_umo(umo: str, user_id: str) -> str:
+    user_id = str(user_id or "").strip()
+    if not user_id or len(user_id) > 64 or any(char in user_id for char in "\\_%"):
+        return ""
     parts = umo.split(":")
     if len(parts) < 3 or parts[1] != "GroupMessage":
         return ""
-    return f"{parts[0]}:GroupMessage:{user_id}_{_group_id_from_umo(umo)}"
+    group_id = _group_id_from_umo(umo)
+    if not group_id:
+        return ""
+    return f"{parts[0]}:GroupMessage:{user_id}_{group_id}"
+
+
+def _mask_user_id(user_id: str) -> str:
+    value = "".join(char for char in str(user_id or "") if char.isalnum())
+    if len(value) <= 4:
+        return "****"
+    return f"{value[:2]}****{value[-2:]}"
+
+
+def _mask_call_time(created_at) -> str:
+    text = str(created_at or "").strip()
+    parsed = None
+    for pattern in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.datetime.strptime(text[:26], pattern)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        return "--.-- --:**"
+    local_time = parsed.replace(tzinfo=ZoneInfo("UTC")).astimezone()
+    return f"{local_time.strftime('%m.%d')} {local_time.strftime('%H')}:**"
 
 
 def _astrbot_data_dir() -> Path:

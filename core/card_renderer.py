@@ -15,6 +15,72 @@ _MAX_AVATAR_PIXELS = 12_000_000
 Image.MAX_IMAGE_PIXELS = _MAX_AVATAR_PIXELS
 
 
+def render_self_calls_png(
+    calls: list[dict],
+    masked_user: str,
+    timestamp: str,
+    output_path: Path,
+) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    visible = calls[:12]
+    height = 318 + max(1, len(visible)) * 72 + 86
+    image = Image.new("RGB", (_WIDTH, height), _PAPER)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((36, 36, _WIDTH - 36, height - 36), outline=_BLACK, width=3)
+    draw.rectangle((36, 36, 54, height - 36), fill=_RED)
+    _text(draw, 78, 54, "最近调用", 22, _RED, chinese=True)
+    _text(draw, 78, 88, "SELF", 52, _BLACK)
+    title_width = _text_width("SELF", 52)
+    _text(draw, 78 + title_width + 16, 88, "CALLS", 52, _RED)
+    _text(draw, 78, 158, f"ID  {masked_user}", 18, _BLACK)
+    _text(draw, 78, 186, f"LOCAL  /  {timestamp}", 16, _MUTED)
+    draw.line((78, 222, _WIDTH - 76, 222), fill=_BLACK, width=2)
+    _text(draw, 78, 236, "NO", 14, _MUTED)
+    _text(draw, 150, 236, "TIME", 14, _MUTED)
+    input_header_x = 470 + _text_width("000,000", 22) - _text_width("INPUT", 14)
+    output_header_x = _WIDTH - 76 - _text_width("OUTPUT", 14)
+    _text(draw, input_header_x, 236, "INPUT", 14, _MUTED)
+    _text(draw, output_header_x, 236, "OUTPUT", 14, _MUTED)
+
+    if not visible:
+        _text(draw, 78, 292, "还没有调用记录", 28, _BLACK, chinese=True)
+    top = max((int(row.get("input_tokens") or 0) for row in visible), default=1)
+    for index, row in enumerate(visible, start=1):
+        _draw_call_row(draw, 268 + (index - 1) * 72, index, row, top)
+
+    footer_y = height - 78
+    draw.line((78, footer_y, _WIDTH - 76, footer_y), fill=_BLACK, width=1)
+    _text(draw, 78, footer_y + 16, f"GRID {len(visible):02d} / MINUTE MASKED", 16, _BLACK)
+    draw.rectangle((_WIDTH - 160, footer_y + 16, _WIDTH - 76, footer_y + 34), fill=_RED)
+    image.save(output_path, format="PNG")
+    return output_path
+
+
+def _draw_call_row(
+    draw: ImageDraw.ImageDraw,
+    y: int,
+    index: int,
+    row: dict,
+    top_input: int,
+) -> None:
+    _text(draw, 78, y + 8, f"{index:02d}", 22, _RED)
+    _text(draw, 150, y + 10, str(row.get("time") or "--.-- --:**"), 22, _BLACK)
+    input_tokens = int(row.get("input_tokens") or 0)
+    output_tokens = int(row.get("output_tokens") or 0)
+    input_text = f"{input_tokens:,}"
+    output_text = f"{output_tokens:,}"
+    input_x = 470 + _text_width("000,000", 22) - _text_width(input_text, 22)
+    output_x = _WIDTH - 76 - _text_width(output_text, 22)
+    _text(draw, input_x, y + 8, input_text, 22, _BLACK)
+    _text(draw, output_x, y + 8, output_text, 22, _BLACK)
+    bar_max = 250
+    ratio = 0 if top_input <= 0 else input_tokens / top_input
+    bar_width = max(8, round(bar_max * ratio)) if input_tokens else 0
+    draw.rectangle((150, y + 42, 150 + bar_max, y + 50), fill=_TRACK)
+    if bar_width:
+        draw.rectangle((150, y + 42, 150 + bar_width, y + 50), fill=_RED)
+
+
 def render_rice_rank_png(rows: list[dict], timestamp: str, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     visible = rows[:10]

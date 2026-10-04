@@ -39,9 +39,9 @@ pip install -r requirements.txt
 | 命令 | 说明 |
 |:-----|:-----|
 | `谁吃了大米饭` / `tokens list` | 生成本群今日用量排名卡片 |
-| `我吃了多少大米饭` / `tokens self` | 查询自己本群今日的 tokens 用量和调用次数 |
+| `我吃了多少大米饭` / `tokens self` | 生成自己本群最近几次调用的卡片 |
 
-`tokens list` 支持管理员限制配置。`tokens self` 仅统计当前群，私聊使用时会提示在群聊中使用。
+`tokens list` 支持管理员限制配置。`tokens self` 仅统计当前群，私聊使用时会提示在群聊中使用。卡片不显示消息正文，调用时间会隐藏分钟。
 
 ## ⚙️ 配置项说明
 
@@ -49,6 +49,7 @@ pip install -r requirements.txt
 |:-------|:-----|:-------|:-----|
 | `only_admin` | bool | `false` | 仅管理员可查看群用量排名 |
 | `rank_limit` | int | `10` | 卡片最多展示人数，范围 1 到 10 |
+| `self_recent_limit` | int | `8` | 个人卡片最多展示的最近调用次数，范围 1 到 12 |
 
 ## 📊 统计口径
 
@@ -56,16 +57,15 @@ pip install -r requirements.txt
 - tokens = `token_input_other + token_input_cached + token_output`。
 - 对话次数是今日模型调用次数，不是用户发出的消息条数。
 - 同一段历史上下文会在每次调用时重复计入输入 tokens。
+- `tokens self` 展示当前群内自己最近几次调用，不限今天。
+- 输入 tokens = `token_input_other + token_input_cached`，输出 tokens = `token_output`。
+- 调用时间转换为本地时间后只显示月日和小时，分钟以 `**` 隐藏。
 
 ## 🖼️ 示例图
 
 发送 `tokens list` 后，插件会生成本群今日用量排名卡片。
 
-发送 `tokens self` 后，插件会返回类似以下内容：
-
-```text
-你今天吃了 12,345 tokens，共调用 8 次。
-```
+发送 `tokens self` 后，插件会返回一张瑞士风格卡片。卡片列出最近调用的脱敏时间和输入、输出 tokens，不包含消息正文。
 
 ## 📁 文件说明
 
@@ -85,7 +85,7 @@ pip install -r requirements.txt
 
 ## 📌 注意事项
 
-- 个人用量仅按当前群统计。
+- 个人调用仅按当前群统计，卡片会隐藏分钟和用户标识中间位。
 - 排名卡片会读取群成员资料并请求 QQ 头像服务。
 - 请根据群组隐私需求配置 `only_admin`。
 

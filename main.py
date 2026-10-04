@@ -17,7 +17,7 @@ class RiceEaterPlugin(Star):
 
     @filter.command("tokens")
     async def tokens_command(self, event: AstrMessageEvent, action: str = "list"):
-        """使用 tokens list 查看群排名，使用 tokens self 查看个人用量"""
+        """使用 tokens list 查看群排名，使用 tokens self 查看最近调用"""
         action = str(action).strip().lower()
         if action == "self":
             async for result in self.my_rice(event):
@@ -27,23 +27,28 @@ class RiceEaterPlugin(Star):
             async for result in self.who_ate_rice(event):
                 yield result
             return
-        yield event.plain_result("用法：tokens list 查看群排名，tokens self 查看自己的用量。")
+        yield event.plain_result("用法：tokens list 查看群排名，tokens self 查看自己的最近调用。")
 
     @filter.command("我吃了多少大米饭")
     async def my_rice(self, event: AstrMessageEvent):
-        """查看自己本群今日的 tokens 用量"""
+        """查看自己本群最近几次模型调用"""
         group_id = event.get_group_id()
         if not group_id:
             yield event.plain_result("请在群聊中使用此命令。")
             return
-        usage = await asyncio.to_thread(
-            self.rank_service.get_my_tokens,
+        card_path = await self.rank_service.get_self_card(
             event.unified_msg_origin,
             event.get_sender_id(),
         )
-        yield event.plain_result(
-            f"你今天吃了 {usage['tokens']:,} tokens，共调用 {usage['chats']} 次。"
-        )
+        try:
+            yield event.image_result(card_path)
+        finally:
+            try:
+                os.remove(card_path)
+            except FileNotFoundError:
+                pass
+            except OSError as err:
+                logger.debug(f"清理个人调用图片失败: {type(err).__name__}")
 
     @filter.command("谁吃了大米饭")
     async def who_ate_rice(self, event: AstrMessageEvent):
