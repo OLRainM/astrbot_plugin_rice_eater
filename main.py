@@ -1,10 +1,10 @@
-import asyncio
 import os
 
 from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
 from astrbot.core.config.astrbot_config import AstrBotConfig
+from astrbot.core.message.components import At
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
 from .core.rank_service import RankService
@@ -17,28 +17,48 @@ class RiceEaterPlugin(Star):
 
     @filter.command("tokens")
     async def tokens_command(self, event: AstrMessageEvent, action: str = "list"):
-        """使用 tokens list 查看群排名，使用 tokens self 查看最近调用"""
+        """使用 tokens list 查看群排名，tokens self 查看自己，tokens yours @用户 查看他人"""
         action = str(action).strip().lower()
         if action == "self":
             async for result in self.my_rice(event):
+                yield result
+            return
+        if action == "yours":
+            async for result in self.your_rice(event):
                 yield result
             return
         if action == "list":
             async for result in self.who_ate_rice(event):
                 yield result
             return
-        yield event.plain_result("用法：tokens list 查看群排名，tokens self 查看自己的最近调用。")
+        yield event.plain_result(
+            "用法：tokens list 查看群排名，tokens self 查看自己，tokens yours @用户 查看他人最近调用。"
+        )
 
     @filter.command("我吃了多少大米饭")
     async def my_rice(self, event: AstrMessageEvent):
         """查看自己本群最近几次模型调用"""
+        async for result in self._reply_user_card(event, event.get_sender_id()):
+            yield result
+
+    @filter.command("你吃了多少大米饭")
+    async def your_rice(self, event: AstrMessageEvent):
+        """查看被 @ 用户本群最近几次模型调用"""
+        user_id = _mentioned_user_id(event)
+        if not user_id:
+            yield event.plain_result("请 @ 要查询的用户，例如：你吃了多少大米饭 @某人")
+            return
+        async for result in self._reply_user_card(event, user_id):
+            yield result
+
+    async def _reply_user_card(self, event: AstrMessageEvent, user_id: str):
         group_id = event.get_group_id()
         if not group_id:
             yield event.plain_result("请在群聊中使用此命令。")
             return
         card_path = await self.rank_service.get_self_card(
             event.unified_msg_origin,
-            event.get_sender_id(),
+            user_id,
         )
         try:
             yield event.image_result(card_path)
@@ -146,6 +166,19 @@ def _member_rows(payload) -> list[dict]:
             if isinstance(rows, list):
                 return [row for row in rows if isinstance(row, dict)]
     return []
+
+
+def _mentioned_user_id(event: AstrMessageEvent) -> str:
+    for component in event.get_messages():
+        if not isinstance(component, At):
+            continue
+        user_id = str(getattr(component, "qq", "") or "").strip()
+        if not user_id or user_id.lower() == "all":
+            continue
+        if len(user_id) > 64 or any(char in user_id for char in "\\_%"):
+            continue
+        return user_id
+    return ""
 
 
 def _avatar_url(member: dict, user_id: str) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import unicodedata
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -186,6 +187,10 @@ def _text(
     fill: str,
     chinese: bool = False,
 ) -> None:
+    image = getattr(draw, "_image", None) or getattr(draw, "im", None)
+    if isinstance(image, Image.Image):
+        _draw_mixed_text(image, x, y, text, size, fill, chinese)
+        return
     draw.text((x, y), text, font=_font(size, chinese), fill=fill)
 
 
@@ -203,21 +208,166 @@ def _fit_text(
     width = max(1, right - left)
     height = max(1, bottom - top)
     layer = Image.new("RGB", (width + 240, height), _PAPER)
-    ImageDraw.Draw(layer).text(
-        (0, 0),
-        " ".join(text.split()),
-        font=_font(size, chinese),
-        fill=fill,
-    )
-    bbox = layer.getbbox()
-    if bbox and bbox[2] > width:
+    _draw_mixed_text(layer, 0, 0, " ".join(text.split()), size, fill, chinese)
+    if _text_width(" ".join(text.split()), size, chinese) > width:
         fade = Image.new("RGB", (28, height), _PAPER)
         layer.paste(fade, (width - 28, 0))
     image.paste(layer.crop((0, 0, width, height)), (left, top))
 
 
+def _draw_mixed_text(
+    image: Image.Image,
+    x: int,
+    y: int,
+    text: str,
+    size: int,
+    fill: str,
+    chinese: bool,
+) -> None:
+    draw = ImageDraw.Draw(image)
+    cursor = x
+    body = _font(size, chinese)
+    for cluster in _text_clusters(text):
+        if _is_emoji_cluster(cluster):
+            glyph = _emoji_glyph(cluster, size, fill)
+            if glyph is not None:
+                top = y + max(0, (size - glyph.height) // 2)
+                image.paste(glyph, (cursor, top), glyph)
+                cursor += glyph.width + max(1, size // 12)
+                continue
+        draw.text((cursor, y), cluster, font=body, fill=fill)
+        cursor += int(body.getlength(cluster))
+
+
 def _text_width(text: str, size: int, chinese: bool = False) -> int:
-    return int(_font(size, chinese).getlength(text))
+    body = _font(size, chinese)
+    width = 0
+    for cluster in _text_clusters(text):
+        if _is_emoji_cluster(cluster):
+            glyph = _emoji_glyph(cluster, size, _BLACK)
+            if glyph is not None:
+                width += glyph.width + max(1, size // 12)
+                continue
+        width += int(body.getlength(cluster))
+    return width
+
+
+def _text_clusters(text: str) -> list[str]:
+    clusters: list[str] = []
+    index = 0
+    chars = list(text)
+    while index < len(chars):
+        char = chars[index]
+        if not _is_emoji_char(char):
+            clusters.append(char)
+            index += 1
+            continue
+        end = index + 1
+        while end < len(chars) and (
+            _is_emoji_char(chars[end]) or unicodedata.combining(chars[end])
+        ):
+            joiner = chars[end] == "\u200d"
+            end += 1
+            if joiner and end < len(chars):
+                end += 1
+        clusters.append("".join(chars[index:end]))
+        index = end
+    return clusters
+
+
+def _is_emoji_cluster(text: str) -> bool:
+    return any(_is_emoji_char(char) for char in text)
+
+
+def _is_emoji_char(char: str) -> bool:
+    code = ord(char)
+    return (
+        0x1F000 <= code <= 0x1FAFF
+        or 0x2600 <= code <= 0x27BF
+        or 0xFE00 <= code <= 0xFE0F
+        or code in {0x200D, 0x20E3}
+        or 0x1F1E6 <= code <= 0x1F1FF
+        or 0xE0020 <= code <= 0xE007F
+    )
+
+
+def _emoji_glyph(text: str, size: int, fill: str) -> Image.Image | None:
+    cached = _EMOJI_GLYPHS.get((text, size, fill))
+    if cached is not None or (text, size, fill) in _EMOJI_GLYPHS:
+        return cached
+    glyph = _render_emoji_glyph(text, size, fill)
+    _EMOJI_GLYPHS[(text, size, fill)] = glyph
+    return glyph
+
+
+def _render_emoji_glyph(text: str, size: int, fill: str) -> Image.Image | None:
+    candidates = _emoji_font_candidates()
+    color_font = next((item for item in candidates if item[1]), None)
+    if color_font is not None:
+        glyph = _draw_font_glyph(text, size, color_font[0], embedded_color=True)
+        if glyph is not None:
+            return glyph
+    mono_font = next((item for item in candidates if not item[1]), None)
+    if mono_font is None:
+        return None
+    return _draw_font_glyph(text, size, mono_font[0], embedded_color=False, fill=fill)
+
+
+def _draw_font_glyph(
+    text: str,
+    size: int,
+    path: str,
+    embedded_color: bool,
+    fill: str = _BLACK,
+) -> Image.Image | None:
+    bitmap_size = 109 if embedded_color else size
+    try:
+        font = ImageFont.truetype(path, bitmap_size)
+    except OSError:
+        return None
+    canvas = max(bitmap_size * 4, 128)
+    layer = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).text(
+        (8, 8),
+        text,
+        font=font,
+        fill=fill,
+        embedded_color=embedded_color,
+    )
+    bbox = layer.getbbox()
+    if not bbox:
+        return None
+    glyph = layer.crop(bbox)
+    if glyph.height != size:
+        glyph = glyph.resize(
+            (max(1, round(glyph.width * size / glyph.height)), size),
+            Image.Resampling.LANCZOS,
+        )
+    return glyph
+
+
+def _emoji_font_candidates() -> list[tuple[str, bool]]:
+    if _EMOJI_FONT_CANDIDATES:
+        return _EMOJI_FONT_CANDIDATES
+    bundled = Path(__file__).resolve().parents[1] / "assets" / "NotoColorEmoji.ttf"
+    paths = (
+        (bundled, True),
+        (Path(r"C:\Windows\Fonts\seguiemj.ttf"), True),
+        (Path("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"), True),
+        (Path("/usr/share/fonts/noto/NotoColorEmoji.ttf"), True),
+        (Path("/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf"), True),
+        (Path("/System/Library/Fonts/Apple Color Emoji.ttc"), True),
+        (Path(r"C:\Windows\Fonts\seguisym.ttf"), False),
+        (Path("/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf"), False),
+    )
+    for path, color in paths:
+        if path.exists():
+            _EMOJI_FONT_CANDIDATES.append((str(path), color))
+    return _EMOJI_FONT_CANDIDATES
+
+
+_EMOJI_FONT_CANDIDATES: list[tuple[str, bool]] = []
+_EMOJI_GLYPHS: dict[tuple[str, int, str], Image.Image | None] = {}
 
 
 def _font(size: int, chinese: bool = False) -> ImageFont.ImageFont:

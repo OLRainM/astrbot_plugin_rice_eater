@@ -40,8 +40,9 @@ pip install -r requirements.txt
 |:-----|:-----|
 | `谁吃了大米饭` / `tokens list` | 生成本群今日用量排名卡片 |
 | `我吃了多少大米饭` / `tokens self` | 生成自己本群最近几次调用的卡片 |
+| `你吃了多少大米饭 @用户` / `tokens yours @用户` | 生成被 @ 用户本群最近几次调用的卡片 |
 
-`tokens list` 支持管理员限制配置。`tokens self` 仅统计当前群，私聊使用时会提示在群聊中使用。卡片不显示消息正文，调用时间会隐藏分钟。
+`tokens list` 支持管理员限制配置。`tokens self` 和 `tokens yours` 仅统计当前群，私聊使用时会提示在群聊中使用。查询他人时需要在消息里 @ 目标用户。卡片不显示消息正文，调用时间会隐藏分钟。
 
 ## ⚙️ 配置项说明
 
@@ -58,6 +59,7 @@ pip install -r requirements.txt
 - 对话次数是今日模型调用次数，不是用户发出的消息条数。
 - 同一段历史上下文会在每次调用时重复计入输入 tokens。
 - `tokens self` 展示当前群内自己最近几次调用，不限今天。
+- `tokens yours` / `你吃了多少大米饭` 展示当前群内被 @ 用户最近几次调用，口径与 `tokens self` 相同。
 - 输入 tokens = `token_input_other + token_input_cached`，输出 tokens = `token_output`。
 - 调用时间转换为本地时间后只显示月日和小时，分钟以 `**` 隐藏。
 
@@ -87,6 +89,7 @@ pip install -r requirements.txt
 
 - 个人调用仅按当前群统计，卡片会隐藏分钟和用户标识中间位。
 - 排名卡片会读取群成员资料并请求 QQ 头像服务。
+- 昵称中的 emoji 使用内置 Noto Color Emoji 绘制，许可为 SIL Open Font License 1.1。
 - 请根据群组隐私需求配置 `only_admin`。
 
 ## 📄 许可
