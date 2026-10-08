@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import os
+import re
 import unicodedata
+import urllib.error
+import urllib.request
 from pathlib import Path
 
+from astrbot.api import logger
 from PIL import Image, ImageDraw, ImageFont
 
 _RED = "#FF3000"
@@ -82,7 +88,12 @@ def _draw_call_row(
         draw.rectangle((150, y + 42, 150 + bar_width, y + 50), fill=_RED)
 
 
-def render_rice_rank_png(rows: list[dict], timestamp: str, output_path: Path) -> Path:
+def render_rice_rank_png(
+    rows: list[dict],
+    timestamp: str,
+    output_path: Path,
+    group_tokens: int | None = None,
+) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     visible = rows[:10]
     height = 236 + max(1, len(visible)) * 84 + 78
@@ -95,7 +106,18 @@ def render_rice_rank_png(rows: list[dict], timestamp: str, output_path: Path) ->
     title_width = _text_width("RICE", 56)
     _text(draw, 78 + title_width + 18, 96, "RANK", 56, _RED)
     draw.line((78, 176, _WIDTH - 76, 176), fill=_BLACK, width=2)
-    _text(draw, 78, 190, f"TODAY  /  {timestamp}", 16, _MUTED)
+    today_text = f"TODAY  /  {timestamp}"
+    _text(draw, 78, 190, today_text, 16, _MUTED)
+    if group_tokens is not None:
+        total_text = f"GROUP  {_format_rank_tokens(int(group_tokens))}"
+        _text(
+            draw,
+            _WIDTH - 76 - _text_width(total_text, 16),
+            190,
+            total_text,
+            16,
+            _BLACK,
+        )
 
     if not visible:
         _text(draw, 78, 250, "今日还没人吃饭", 28, _BLACK, chinese=True)
@@ -207,12 +229,12 @@ def _fit_text(
 ) -> None:
     width = max(1, right - left)
     height = max(1, bottom - top)
-    layer = Image.new("RGB", (width + 240, height), _PAPER)
+    layer = Image.new("RGBA", (width + 240, height), (*_paper_rgb(), 255))
     _draw_mixed_text(layer, 0, 0, " ".join(text.split()), size, fill, chinese)
     if _text_width(" ".join(text.split()), size, chinese) > width:
         fade = Image.new("RGB", (28, height), _PAPER)
         layer.paste(fade, (width - 28, 0))
-    image.paste(layer.crop((0, 0, width, height)), (left, top))
+    image.paste(layer.crop((0, 0, width, height)), (left, top), layer.crop((0, 0, width, height)))
 
 
 def _draw_mixed_text(
@@ -228,13 +250,12 @@ def _draw_mixed_text(
     cursor = x
     body = _font(size, chinese)
     for cluster in _text_clusters(text):
-        if _is_emoji_cluster(cluster):
-            glyph = _emoji_glyph(cluster, size, fill)
-            if glyph is not None:
-                top = y + max(0, (size - glyph.height) // 2)
-                image.paste(glyph, (cursor, top), glyph)
-                cursor += glyph.width + max(1, size // 12)
-                continue
+        glyph = _inline_glyph(cluster, size, fill)
+        if glyph is not None:
+            top = y + max(0, (size - glyph.height) // 2)
+            image.paste(glyph, (cursor, top), glyph)
+            cursor += glyph.width + max(1, size // 12)
+            continue
         draw.text((cursor, y), cluster, font=body, fill=fill)
         cursor += int(body.getlength(cluster))
 
@@ -243,11 +264,10 @@ def _text_width(text: str, size: int, chinese: bool = False) -> int:
     body = _font(size, chinese)
     width = 0
     for cluster in _text_clusters(text):
-        if _is_emoji_cluster(cluster):
-            glyph = _emoji_glyph(cluster, size, _BLACK)
-            if glyph is not None:
-                width += glyph.width + max(1, size // 12)
-                continue
+        glyph = _inline_glyph(cluster, size, _BLACK)
+        if glyph is not None:
+            width += glyph.width + max(1, size // 12)
+            continue
         width += int(body.getlength(cluster))
     return width
 
@@ -255,7 +275,7 @@ def _text_width(text: str, size: int, chinese: bool = False) -> int:
 def _text_clusters(text: str) -> list[str]:
     clusters: list[str] = []
     index = 0
-    chars = list(text)
+    chars = list(_expand_qq_emoji(text))
     while index < len(chars):
         char = chars[index]
         if not _is_emoji_char(char):
@@ -270,9 +290,31 @@ def _text_clusters(text: str) -> list[str]:
             end += 1
             if joiner and end < len(chars):
                 end += 1
-        clusters.append("".join(chars[index:end]))
+        raw = "".join(chars[index:end])
+        clusters.extend(_emoji_pieces(raw))
         index = end
     return clusters
+
+
+def _emoji_pieces(text: str) -> list[str]:
+    """Draw every emoji base character by itself.
+
+    Pillow on Windows does not shape ZWJ sequences or flags into one color
+    glyph. Passing the whole sequence through the body font paints boxes,
+    and the color font paints the pieces with stray joiners between them.
+    """
+    return [
+        char
+        for char in text
+        if _starts_emoji(char) or unicodedata.combining(char)
+    ]
+
+
+def _starts_emoji(char: str) -> bool:
+    code = ord(char)
+    return _is_emoji_char(char) and code not in {0x200D, 0x20E3, 0xFE0F} and not (
+        0xFE00 <= code <= 0xFE0F
+    ) and not unicodedata.combining(char)
 
 
 def _is_emoji_cluster(text: str) -> bool:
@@ -289,6 +331,57 @@ def _is_emoji_char(char: str) -> bool:
         or 0x1F1E6 <= code <= 0x1F1FF
         or 0xE0020 <= code <= 0xE007F
     )
+
+
+def _inline_glyph(text: str, size: int, fill: str) -> Image.Image | None:
+    qq_id = _QQ_EMOJI_IDS.get(text)
+    if qq_id is not None:
+        return _qq_glyph(qq_id, size)
+    if _is_emoji_cluster(text):
+        return _emoji_glyph(text, size, fill)
+    return None
+
+
+def _expand_qq_emoji(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        code = ord(match.group(1))
+        if code in _QQ_CODE_TO_ID:
+            return chr(_QQ_PUA + code)
+        return match.group(0)
+
+    return _QQ_TOKEN.sub(replace, text)
+
+
+def _qq_glyph(emoji_id: str, size: int) -> Image.Image | None:
+    cached = _QQ_GLYPHS.get((emoji_id, size))
+    if cached is not None or (emoji_id, size) in _QQ_GLYPHS:
+        return cached
+    path = _qq_emoji_path(emoji_id)
+    glyph = None
+    if path is not None:
+        try:
+            image = Image.open(path).convert("RGBA")
+            glyph = image.resize((size, size), Image.Resampling.LANCZOS)
+        except OSError:
+            glyph = None
+    _QQ_GLYPHS[(emoji_id, size)] = glyph
+    return glyph
+
+
+def _qq_emoji_path(emoji_id: str) -> Path | None:
+    bundled = Path(__file__).resolve().parents[1] / "assets" / "qq" / f"{emoji_id}.png"
+    if bundled.exists():
+        return bundled
+    root = Path(r"C:\Program Files\Tencent")
+    if root.exists():
+        matches = sorted(root.glob(f"QQNT/versions/*/resources/app/resource/default-emojis/{emoji_id}.png"))
+        if matches:
+            return matches[-1]
+    return None
+
+
+def _paper_rgb() -> tuple[int, int, int]:
+    return tuple(int(_PAPER[index : index + 2], 16) for index in (1, 3, 5))
 
 
 def _emoji_glyph(text: str, size: int, fill: str) -> Image.Image | None:
@@ -320,7 +413,7 @@ def _draw_font_glyph(
     embedded_color: bool,
     fill: str = _BLACK,
 ) -> Image.Image | None:
-    bitmap_size = 109 if embedded_color else size
+    bitmap_size = _EMOJI_BITMAP if embedded_color else size
     try:
         font = ImageFont.truetype(path, bitmap_size)
     except OSError:
@@ -366,8 +459,181 @@ def _emoji_font_candidates() -> list[tuple[str, bool]]:
     return _EMOJI_FONT_CANDIDATES
 
 
+_EMOJI_BITMAP = 109
 _EMOJI_FONT_CANDIDATES: list[tuple[str, bool]] = []
 _EMOJI_GLYPHS: dict[tuple[str, int, str], Image.Image | None] = {}
+_QQ_PUA = 0xE000
+_QQ_TOKEN = re.compile(r"<\$([^<>])>")
+_QQ_CODE_TO_ID = {
+    0x00B2: "178",  # <$²> 斜眼笑
+    0x0092: "146",  # <$> 爆筋
+    0x0005: "5",  # 流泪
+    0x0137: "311",  # 打call
+    0x0138: "312",  # 变形
+    0x0139: "314",  # 仔细分析
+    0x013A: "317",  # 菜汪
+    0x013D: "318",  # 崇拜
+    0x013E: "319",  # 比心
+    0x013F: "320",  # 庆祝
+    0x0140: "324",  # 吃糖
+    0x0141: "325",  # 惊吓
+    0x0151: "337",  # 花朵脸
+    0x0152: "338",  # 我想开了
+    0x0153: "339",  # 舔屏
+    0x0154: "341",  # 打招呼
+    0x0072: "114",  # 篮球
+    0x0146: "326",  # 生气
+    0x0035: "53",  # 蛋糕
+    0x0089: "137",  # 鞭炮
+    0x014D: "333",  # 烟花
+    0x0000: "14",
+    0x0001: "1",
+    0x0002: "2",
+    0x0003: "3",
+    0x0004: "4",
+    0x0006: "6",
+    0x0007: "7",
+    0x0008: "8",
+    0x0009: "9",
+    0x000A: "10",
+    0x000B: "11",
+    0x000C: "12",
+    0x000D: "13",
+    0x000E: "0",
+    0x000F: "15",
+    0x0010: "16",
+    0x0011: "96",
+    0x0012: "18",
+    0x0013: "19",
+    0x0014: "20",
+    0x0015: "21",
+    0x0016: "22",
+    0x0017: "23",
+    0x0018: "24",
+    0x0019: "25",
+    0x001A: "26",
+    0x001B: "27",
+    0x001C: "28",
+    0x001D: "29",
+    0x001E: "30",
+    0x001F: "31",
+    0x007F: "32",
+    0x0080: "33",
+    0x0081: "34",
+    0x0082: "35",
+    0x0083: "36",
+    0x0084: "37",
+    0x0085: "38",
+    0x0086: "39",
+    0x0087: "97",
+    0x0088: "98",
+    0x008A: "99",
+    0x008B: "100",
+    0x008C: "101",
+    0x008D: "102",
+    0x008E: "103",
+    0x008F: "104",
+    0x0090: "105",
+    0x0091: "106",
+    0x0093: "107",
+    0x0094: "108",
+    0x0095: "305",
+    0x0096: "109",
+    0x0097: "110",
+    0x0098: "111",
+    0x0099: "172",
+    0x009A: "182",
+    0x009B: "179",
+    0x009C: "173",
+    0x009D: "174",
+    0x009E: "212",
+    0x009F: "175",
+    0x00A1: "177",
+    0x00A2: "176",
+    0x00A3: "183",
+    0x00A4: "262",
+    0x00A5: "263",
+    0x00A6: "264",
+    0x00A7: "265",
+    0x00A8: "266",
+    0x00A9: "267",
+    0x00AA: "268",
+    0x00AB: "269",
+    0x00AC: "270",
+    0x00AD: "271",
+    0x00AE: "272",
+    0x00AF: "277",
+    0x00B0: "307",
+    0x00B1: "306",
+    0x00B3: "281",
+    0x00B4: "282",
+    0x00B5: "283",
+    0x00B6: "284",
+    0x00B7: "285",
+    0x00B8: "293",
+    0x00B9: "286",
+    0x00BA: "287",
+    0x00BB: "289",
+    0x00BC: "294",
+    0x00BD: "297",
+    0x00BE: "298",
+    0x00BF: "299",
+    0x00C0: "300",
+    0x00C1: "323",
+    0x00C2: "332",
+    0x00C3: "336",
+    0x00C4: "353",
+    0x00C5: "355",
+    0x00C6: "356",
+    0x00C7: "354",
+    0x00C8: "352",
+    0x00C9: "357",
+    0x00CA: "428",
+    0x00CB: "334",
+    0x00CC: "347",
+    0x00CD: "303",
+    0x00CE: "302",
+    0x00CF: "295",
+    0x00D0: "49",
+    0x00D1: "66",
+    0x00D2: "63",
+    0x00D3: "64",
+    0x00D4: "187",
+    0x00D5: "116",
+    0x00D6: "67",
+    0x00D7: "60",
+    0x00D8: "185",
+    0x00D9: "76",
+    0x00DA: "124",
+    0x00DB: "118",
+    0x00DC: "78",
+    0x00DD: "119",
+    0x00DE: "79",
+    0x00DF: "120",
+    0x00E0: "121",
+    0x00E1: "77",
+    0x00E2: "123",
+    0x00E3: "201",
+    0x00E4: "273",
+    0x00E5: "46",
+    0x00E6: "112",
+    0x00E7: "56",
+    0x00E8: "169",
+    0x00E9: "171",
+    0x00EA: "59",
+    0x00EB: "144",
+    0x00EC: "147",
+    0x00ED: "89",
+    0x00EE: "41",
+    0x00EF: "125",
+    0x00F0: "42",
+    0x00F1: "43",
+    0x00F2: "86",
+    0x00F3: "129",
+    0x00F4: "85",
+}
+_QQ_EMOJI_IDS = {chr(_QQ_PUA + code): emoji_id for code, emoji_id in _QQ_CODE_TO_ID.items()}
+_QQ_GLYPHS: dict[tuple[str, int], Image.Image | None] = {}
 
 
 def _font(size: int, chinese: bool = False) -> ImageFont.ImageFont:
