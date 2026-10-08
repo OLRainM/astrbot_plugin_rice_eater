@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
-from .card_renderer import render_rice_rank_png, render_self_calls_png
+from .card_renderer import ensure_emoji_font, render_rice_rank_png, render_self_calls_png
 
 _MAX_AVATAR_BYTES = 2 * 1024 * 1024
 _MAX_AVATAR_ITEMS = 20
@@ -36,7 +36,8 @@ class RankService:
         umo: str = "",
         profiles: dict[str, dict] | None = None,
     ) -> str:
-        rows = await asyncio.to_thread(self._query_group_user_tokens, umo)
+        await asyncio.to_thread(ensure_emoji_font)
+        rows, group_tokens = await asyncio.to_thread(self._query_group_user_tokens, umo)
         enriched = [
             {
                 **row,
@@ -63,10 +64,12 @@ class RankService:
                 enriched,
                 timestamp,
                 output_path,
+                group_tokens,
             )
         )
 
     async def get_self_card(self, umo: str, user_id: str) -> str:
+        await asyncio.to_thread(ensure_emoji_font)
         calls = await asyncio.to_thread(self._query_recent_calls, umo, user_id)
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         output_path = (
@@ -126,10 +129,10 @@ class RankService:
             )
         return calls
 
-    def _query_group_user_tokens(self, umo: str) -> list[dict]:
+    def _query_group_user_tokens(self, umo: str) -> tuple[list[dict], int]:
         group_id = _group_id_from_umo(umo)
         if not group_id:
-            return []
+            return [], 0
         local_now = datetime.datetime.now().astimezone()
         today_start_utc = (
             local_now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -162,29 +165,31 @@ class RankService:
                       LIKE '%\\_' || ? ESCAPE '\\'
                 GROUP BY user_id
                 ORDER BY tokens DESC
-                LIMIT ?
                 """,
-                (today_start_utc, group_id, self.rank_limit),
+                (today_start_utc, group_id),
             ).fetchall()
         except Exception as err:
             logger.warning(f"读取大米饭用量失败: {err}")
-            return []
+            return [], 0
         finally:
             if connection is not None:
                 connection.close()
         ranked = []
+        group_tokens = 0
         for user_id, tokens, chats in rows:
             user_id = str(user_id or "")
             if not user_id or "_" in user_id:
                 continue
+            amount = int(tokens or 0)
+            group_tokens += amount
             ranked.append(
                 {
                     "user_id": user_id,
-                    "tokens": int(tokens or 0),
+                    "tokens": amount,
                     "chats": int(chats or 0),
                 }
             )
-        return ranked
+        return ranked[: self.rank_limit], group_tokens
 
 
 def _group_id_from_umo(umo: str) -> str:

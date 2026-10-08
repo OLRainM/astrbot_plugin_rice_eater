@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.2
+
+- `tokens list` 卡片显示当前群聊当天全部用户的 tokens 总消耗。
+- 彩色表情字体改为首次使用时从 Release `emoji-font-v2.051` 下载，并校验 SHA256。下载失败时回退系统字体，字体不再随插件包分发。
+
 ## v1.2.1
 
 - 排名卡片支持彩色 emoji 昵称。系统字体画不出彩色字形时，改用 Noto Color Emoji。

@@ -442,9 +442,8 @@ def _draw_font_glyph(
 def _emoji_font_candidates() -> list[tuple[str, bool]]:
     if _EMOJI_FONT_CANDIDATES:
         return _EMOJI_FONT_CANDIDATES
-    bundled = Path(__file__).resolve().parents[1] / "assets" / "NotoColorEmoji.ttf"
     paths = (
-        (bundled, True),
+        (_cached_emoji_font(), True),
         (Path(r"C:\Windows\Fonts\seguiemj.ttf"), True),
         (Path("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"), True),
         (Path("/usr/share/fonts/noto/NotoColorEmoji.ttf"), True),
@@ -461,6 +460,105 @@ def _emoji_font_candidates() -> list[tuple[str, bool]]:
 
 _EMOJI_BITMAP = 109
 _EMOJI_FONT_CANDIDATES: list[tuple[str, bool]] = []
+_EMOJI_FONT_SHA256 = "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b"
+_EMOJI_FONT_URL = (
+    "https://github.com/OLRainM/astrbot_plugin_rice_eater/releases/download/"
+    "emoji-font-v2.051/NotoColorEmoji.ttf"
+)
+_EMOJI_FONT_CANDIDATES: list[tuple[str, bool]] = []
+_EMOJI_FONT_READY = False
+
+
+def ensure_emoji_font() -> None:
+    """Download the color emoji font once. Failure keeps the system font."""
+    global _EMOJI_FONT_READY
+    if _EMOJI_FONT_READY:
+        return
+    _EMOJI_FONT_READY = True
+    path = _emoji_font_cache_path()
+    if path is not None and _emoji_font_digest_ok(path):
+        _reset_emoji_font_candidates()
+        return
+    if not _download_emoji_font(path):
+        logger.info("彩色表情字体不可用，回退到系统字体")
+    _reset_emoji_font_candidates()
+
+
+def _emoji_font_cache_path() -> Path | None:
+    configured_root = os.environ.get("ASTRBOT_ROOT")
+    if configured_root:
+        root = Path(configured_root) / "data" / "plugin_data" / "astrbot_plugin_rice_eater"
+    elif os.name == "nt" and (
+        "ASTRBOT_DESKTOP" in os.environ
+        or (Path.home() / ".astrbot" / "data" / "data_v4.db").exists()
+    ):
+        root = Path.home() / ".astrbot" / "data" / "plugin_data" / "astrbot_plugin_rice_eater"
+    else:
+        root = Path.cwd() / "data" / "plugin_data" / "astrbot_plugin_rice_eater"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return root / "NotoColorEmoji.ttf"
+
+
+def _cached_emoji_font() -> Path:
+    path = _emoji_font_cache_path()
+    if path is not None and _emoji_font_digest_ok(path):
+        return path
+    return Path("__missing_emoji_font__")
+
+
+def _emoji_font_digest_ok(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return False
+    return digest.hexdigest() == _EMOJI_FONT_SHA256
+
+
+def _download_emoji_font(path: Path | None) -> bool:
+    if path is None:
+        return False
+    temporary = path.with_suffix(".ttf.part")
+    try:
+        with urllib.request.urlopen(_EMOJI_FONT_URL, timeout=30) as response:
+            status = getattr(response, "status", 200)
+            if status != 200:
+                return False
+            with temporary.open("wb") as handle:
+                total = 0
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 20 * 1024 * 1024:
+                        raise ValueError("emoji font exceeds size limit")
+                    handle.write(chunk)
+        if not _emoji_font_digest_ok(temporary):
+            logger.warning("彩色表情字体 SHA256 校验失败，回退到系统字体")
+            return False
+        temporary.replace(path)
+        return True
+    except (OSError, urllib.error.URLError, TimeoutError, ValueError) as err:
+        logger.info(f"彩色表情字体下载失败，回退到系统字体: {type(err).__name__}")
+        return False
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _reset_emoji_font_candidates() -> None:
+    _EMOJI_FONT_CANDIDATES.clear()
+    _EMOJI_GLYPHS.clear()
 _EMOJI_GLYPHS: dict[tuple[str, int, str], Image.Image | None] = {}
 _QQ_PUA = 0xE000
 _QQ_TOKEN = re.compile(r"<\$([^<>])>")
