@@ -466,22 +466,40 @@ _EMOJI_FONT_URL = (
     "emoji-font-v2.051/NotoColorEmoji.ttf"
 )
 _EMOJI_FONT_CANDIDATES: list[tuple[str, bool]] = []
-_EMOJI_FONT_READY = False
+_EMOJI_FONT_DOWNLOAD_SECONDS = 30
 
 
-def ensure_emoji_font() -> None:
-    """Download the color emoji font once. Failure keeps the system font."""
-    global _EMOJI_FONT_READY
-    if _EMOJI_FONT_READY:
-        return
-    _EMOJI_FONT_READY = True
+class EmojiFontError(TimeoutError):
+    """彩色表情字体下载失败。"""
+
+
+def prepare_emoji_font() -> None:
+    """Use a verified cached font. Never download during card rendering."""
     path = _emoji_font_cache_path()
     if path is not None and _emoji_font_digest_ok(path):
         _reset_emoji_font_candidates()
         return
-    if not _download_emoji_font(path):
-        logger.info("彩色表情字体不可用，回退到系统字体")
+    logger.info("彩色表情字体未安装，使用系统字体")
     _reset_emoji_font_candidates()
+
+
+def download_emoji_font() -> str:
+    """Download only when explicitly requested. Raise after 30 seconds."""
+    path = _emoji_font_cache_path()
+    if path is not None and _emoji_font_digest_ok(path):
+        _reset_emoji_font_candidates()
+        return "彩色表情字体已存在，无需重复下载。"
+    try:
+        if not _download_emoji_font(path):
+            raise EmojiFontError("彩色表情字体下载失败")
+    except EmojiFontError:
+        _reset_emoji_font_candidates()
+        raise
+    except Exception as err:
+        _reset_emoji_font_candidates()
+        raise EmojiFontError("彩色表情字体下载失败") from err
+    _reset_emoji_font_candidates()
+    return "彩色表情字体下载完成。"
 
 
 def _emoji_font_cache_path() -> Path | None:
@@ -527,7 +545,10 @@ def _download_emoji_font(path: Path | None) -> bool:
         return False
     temporary = path.with_suffix(".ttf.part")
     try:
-        with urllib.request.urlopen(_EMOJI_FONT_URL, timeout=30) as response:
+        with urllib.request.urlopen(
+            _EMOJI_FONT_URL,
+            timeout=_EMOJI_FONT_DOWNLOAD_SECONDS,
+        ) as response:
             status = getattr(response, "status", 200)
             if status != 200:
                 return False
@@ -546,7 +567,14 @@ def _download_emoji_font(path: Path | None) -> bool:
             return False
         temporary.replace(path)
         return True
-    except (OSError, urllib.error.URLError, TimeoutError, ValueError) as err:
+    except TimeoutError as err:
+        raise EmojiFontError("彩色表情字体下载超时") from err
+    except urllib.error.URLError as err:
+        if isinstance(getattr(err, "reason", None), TimeoutError):
+            raise EmojiFontError("彩色表情字体下载超时") from err
+        logger.info(f"彩色表情字体下载失败，回退到系统字体: {type(err).__name__}")
+        return False
+    except (OSError, ValueError) as err:
         logger.info(f"彩色表情字体下载失败，回退到系统字体: {type(err).__name__}")
         return False
     finally:

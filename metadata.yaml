@@ -1,8 +1,8 @@
 name: astrbot_plugin_rice_eater
 display_name: 谁吃了大米饭
 desc: 查看本群今日谁吃了多少大米饭，按模型调用用量生成排名卡片。
-help: 发送“谁吃了大米饭”查看本群今日用量排名，发送“tokens self”查看自己的最近调用，发送“你吃了多少大米饭 @用户”查看他人最近调用。
-version: v1.2.2
+help: 发送“谁吃了大米饭”查看本群今日用量排名，发送“tokens self”查看自己的最近调用，发送“你吃了多少大米饭 @用户”查看他人最近调用，发送“tokens fonts download”下载彩色表情字体。
+version: v1.2.4
 author: OLRainM
 repo: https://github.com/OLRainM/astrbot_plugin_rice_eater
 astrbot_version: ">=4.0.0"

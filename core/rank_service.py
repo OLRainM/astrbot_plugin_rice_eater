@@ -11,7 +11,13 @@ from zoneinfo import ZoneInfo
 from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
-from .card_renderer import ensure_emoji_font, render_rice_rank_png, render_self_calls_png
+from .card_renderer import (
+    EmojiFontError,
+    download_emoji_font,
+    prepare_emoji_font,
+    render_rice_rank_png,
+    render_self_calls_png,
+)
 
 _MAX_AVATAR_BYTES = 2 * 1024 * 1024
 _MAX_AVATAR_ITEMS = 20
@@ -31,12 +37,21 @@ class RankService:
             recent_limit = 8
         self.self_recent_limit = min(12, max(1, recent_limit))
 
+    async def download_emoji_font(self) -> str:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(download_emoji_font),
+                timeout=30,
+            )
+        except TimeoutError as err:
+            raise EmojiFontError("彩色表情字体下载失败") from err
+
     async def get_rank_card(
         self,
         umo: str = "",
         profiles: dict[str, dict] | None = None,
     ) -> str:
-        await asyncio.to_thread(ensure_emoji_font)
+        await asyncio.to_thread(prepare_emoji_font)
         rows, group_tokens = await asyncio.to_thread(self._query_group_user_tokens, umo)
         enriched = [
             {
@@ -69,7 +84,7 @@ class RankService:
         )
 
     async def get_self_card(self, umo: str, user_id: str) -> str:
-        await asyncio.to_thread(ensure_emoji_font)
+        await asyncio.to_thread(prepare_emoji_font)
         calls = await asyncio.to_thread(self._query_recent_calls, umo, user_id)
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         output_path = (

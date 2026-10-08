@@ -6,7 +6,9 @@ from astrbot.api.star import Context, Star
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.message.components import At
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.star.filter.command import GreedyStr
 
+from .core.card_renderer import EmojiFontError
 from .core.rank_service import RankService
 
 
@@ -16,9 +18,13 @@ class RiceEaterPlugin(Star):
         self.rank_service = RankService(config)
 
     @filter.command("tokens")
-    async def tokens_command(self, event: AstrMessageEvent, action: str = "list"):
+    async def tokens_command(self, event: AstrMessageEvent, action: GreedyStr = "list"):
         """使用 tokens list 查看群排名，tokens self 查看自己，tokens yours @用户 查看他人"""
         action = str(action).strip().lower()
+        if action == "fonts download":
+            async for result in self.download_emoji_font(event):
+                yield result
+            return
         if action == "self":
             async for result in self.my_rice(event):
                 yield result
@@ -32,8 +38,18 @@ class RiceEaterPlugin(Star):
                 yield result
             return
         yield event.plain_result(
-            "用法：tokens list 查看群排名，tokens self 查看自己，tokens yours @用户 查看他人最近调用。"
+            "用法：tokens list 查看群排名，tokens self 查看自己，"
+            "tokens yours @用户 查看他人最近调用，tokens fonts download 下载彩色表情字体。"
         )
+
+    async def download_emoji_font(self, event: AstrMessageEvent):
+        """手动下载彩色表情字体，失败后继续使用系统字体"""
+        try:
+            message = await self.rank_service.download_emoji_font()
+        except EmojiFontError:
+            yield event.plain_result("彩色表情字体下载失败，已改用系统字体。")
+            return
+        yield event.plain_result(message)
 
     @filter.command("我吃了多少大米饭")
     async def my_rice(self, event: AstrMessageEvent):
